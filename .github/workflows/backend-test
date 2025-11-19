@@ -12,62 +12,55 @@ jobs:
   build:
     name: build-app
     runs-on: ubuntu-latest
+
     steps:
-      ## jdk setting
       - uses: actions/checkout@v3
+
       - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
           java-version: '17'
-          distribution: 'zulu' # https://github.com/actions/setup-java
+          distribution: 'zulu'
 
-      ## gradle caching
-      # - name: Gradle Caching
-      #   uses: actions/cache@v3
-      #   with:
-      #     path: |
-      #       ~/.gradle/caches
-      #       ~/.gradle/wrapper
-      #     key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-      #     restore-keys: |
-      #       ${{ runner.os }}-gradle-
-        
       - name: Create application.yaml for CD Deploy
         run: |
           echo "${{ secrets.PRODUCTION_ENV }}" > .env
-          
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      ## gradle build
       - name: Build with Gradle
         run: |
-          ls
           ./gradlew clean build -x test
 
-      ## docker build & push to production
-      - name: Docker build & push to prod
+      - name: Docker build & push to GHCR
         run: |
           docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GHCR_TOKEN }}
-          docker buildx create --name arm64builder --use
-          docker buildx build --platform linux/amd64 -f Dockerfile -t ${{ env.DOCKER_IMAGE }} --push .
+          docker buildx create --name builder --use || true
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f Dockerfile \
+            -t ghcr.io/${{ github.actor }}/mfe-backend-deploy:latest \
+            --push .
           docker logout
-          
+
   deploy:
     needs: build
-    name: Deploy
-    runs-on: [ self-hosted, mfe-backend-deploy ]
+    name: Deploy to EC2
+    runs-on: [ self-hosted, deploy-spring-test ]
+    
     steps:
-      - name: Pull and Deploy Container
+      - name: Deploy to Production
         run: |
-          echo "Starting MFE Backend Production Deployment"
+          echo "Starting Backend Production Deployment"
+          
           cd /home/ec2-user/mfe-backend-deploy
+          
           docker-compose down
-  
           echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          
           docker pull ${{ env.DOCKER_IMAGE }}
-  
+          
           docker image prune -f
-          docker logout
-  
+          
           docker-compose up -d
+          docker logout
